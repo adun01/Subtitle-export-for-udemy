@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Subtitle Export for Udemy",
+  "description": "Export course subtitles from Udemy as a text file for notes and study. Open source: github.com/adun01/Subtitle-export-for-udemy",
+  "version": "1.0.0",
+  "permissions": ["storage", "activeTab", "scripting"],
+  "host_permissions": ["*://*.udemy.com/*", "*://*.udemycdn.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["*://*.udemy.com/course/*/learn/*"],
+      "js": ["content.js"],
+      "css": ["panel.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "icons": {
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}

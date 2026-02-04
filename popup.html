@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body {
+      width: 280px;
+      padding: 16px;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      font-size: 13px;
+    }
+    h3 {
+      color: #00ff88;
+      margin: 0 0 12px 0;
+      font-size: 15px;
+    }
+    .stat {
+      display: flex;
+      justify-content: space-between;
+      padding: 4px 0;
+      border-bottom: 1px solid #333;
+    }
+    .stat .label { color: #888; }
+    .stat .value { color: #00ff88; font-weight: bold; }
+    .note {
+      margin-top: 12px;
+      color: #666;
+      font-size: 11px;
+      line-height: 1.4;
+    }
+    button {
+      width: 100%;
+      padding: 8px;
+      margin-top: 8px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: bold;
+      font-size: 12px;
+    }
+    .btn-dl { background: #9b59b6; color: #fff; }
+    .btn-dl:hover { background: #8e44ad; }
+    .btn-dl:disabled { opacity: 0.4; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <h3>📝 Subtitle Export</h3>
+  <div class="stat">
+    <span class="label">Collected:</span>
+    <span class="value" id="count">...</span>
+  </div>
+  <div class="stat">
+    <span class="label">Position:</span>
+    <span class="value" id="pos">...</span>
+  </div>
+  <div class="stat">
+    <span class="label">Status:</span>
+    <span class="value" id="status">...</span>
+  </div>
+  <button class="btn-dl" id="btn-dl" disabled>💾 Export subtitles</button>
+  <div class="note">
+    The control panel is displayed directly on the Udemy course page.
+    Navigate to any lesson to start collecting subtitles.
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
