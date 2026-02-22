@@ -4,7 +4,6 @@
   // =====================================================
   // CONFIG
   // =====================================================
-  const VTT_WAIT_MS = 8000;
   const NAV_DELAY_MS = 3000;
   const SCAN_RETRY_MS = 3000;
   const MAX_RETRIES = 5;
@@ -60,9 +59,16 @@
     return (await storageGet([sKey("subs")]))[sKey("subs")] || {};
   }
 
-  async function saveSub(lectureId, title, vttContent, url) {
+  async function saveSub(lectureId, title, content, url, contentType = "vtt") {
     const subs = await getSubs();
-    subs[`lec_${lectureId}`] = { title, lectureId, content: vttContent, url, timestamp: new Date().toISOString() };
+    subs[`lec_${lectureId}`] = {
+      title,
+      lectureId,
+      content,
+      url,
+      contentType,
+      timestamp: new Date().toISOString()
+    };
     await storageSet({ [sKey("subs")]: subs });
     return Object.keys(subs).length;
   }
@@ -147,6 +153,91 @@
   }
 
   // =====================================================
+  // CONTENT DETECTION & EXTRACTION
+  // =====================================================
+
+  function isArticlePage() {
+    return !!document.querySelector(".text-viewer--container--TFOCA, .article-asset--content--H92b2");
+  }
+
+  function extractArticleText() {
+    const container = document.querySelector(".article-asset--content--H92b2");
+    if (!container) return null;
+
+    let text = "";
+
+    const heading = document.querySelector(".text-viewer--main-heading--pPafb");
+    if (heading) {
+      text += heading.textContent.trim() + "\n\n";
+    }
+
+    const processNode = (node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const t = node.textContent.trim();
+        if (t) text += t + " ";
+        return;
+      }
+
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+
+      const tag = node.tagName.toLowerCase();
+
+      if (tag === "p") {
+        text += "\n";
+        node.childNodes.forEach(processNode);
+        text += "\n";
+      } else if (tag === "br") {
+        text += "\n";
+      } else if (tag === "strong" || tag === "b") {
+        node.childNodes.forEach(processNode);
+      } else if (tag === "em" || tag === "i") {
+        node.childNodes.forEach(processNode);
+      } else if (tag === "img") {
+        const src = node.getAttribute("src");
+        if (src) text += `\n[IMAGE: ${src}]\n`;
+      } else if (tag === "figure") {
+        node.childNodes.forEach(processNode);
+      } else if (tag === "ul" || tag === "ol") {
+        text += "\n";
+        node.querySelectorAll("li").forEach((li, i) => {
+          text += `  ${tag === "ol" ? (i + 1) + "." : "•"} ${li.textContent.trim()}\n`;
+        });
+        text += "\n";
+      } else if (tag === "pre" || tag === "code") {
+        text += "\n```\n" + node.textContent + "\n```\n";
+      } else if (tag === "h1" || tag === "h2" || tag === "h3" || tag === "h4") {
+        text += "\n\n" + node.textContent.trim() + "\n\n";
+      } else {
+        node.childNodes.forEach(processNode);
+      }
+    };
+
+    container.childNodes.forEach(processNode);
+    text = text.replace(/\n{3,}/g, "\n\n").trim();
+
+    return text;
+  }
+
+  function extractArticleHTML() {
+    const container = document.querySelector(".article-asset--content--H92b2");
+    if (!container) return null;
+
+    let html = "";
+
+    const heading = document.querySelector(".text-viewer--main-heading--pPafb");
+    if (heading) {
+      html += `<h1>${heading.textContent.trim()}</h1>\n`;
+    }
+
+    html += container.innerHTML;
+    html = html.replace(/class="[^"]*"/g, "");
+    html = html.replace(/data-[^=]+="[^"]*"/g, "");
+    html = html.replace(/\s+>/g, ">");
+
+    return html;
+  }
+
+  // =====================================================
   // VTT SCAN
   // =====================================================
   async function scanForVTT() {
@@ -210,9 +301,28 @@
 
     logPanel(`🔍 ${currentIdx + 1}/${targetLessons.length} — Scanning "${lesson.title}"...`, "info");
 
+    // Check if this is an article page
+    if (isArticlePage()) {
+      const articleText = extractArticleText();
+      const articleHTML = extractArticleHTML();
+
+      if (articleText && articleText.length > 50) {
+        const content = JSON.stringify({ text: articleText, html: articleHTML });
+        const count = await saveSub(lesson.id, lesson.title, content, location.href, "article");
+        logPanel(`📄 ${currentIdx + 1}/${targetLessons.length} — "${lesson.title}" [article, ${count} total]`, "success");
+        retryCount = 0;
+        currentIdx++;
+        await saveProgress();
+        updateUI();
+        setTimeout(processCurrentLesson, NAV_DELAY_MS);
+        return;
+      }
+    }
+
+    // Try to find VTT subtitles (for video lessons)
     const vtt = await scanForVTT();
     if (vtt) {
-      const count = await saveSub(lesson.id, lesson.title, vtt, location.href);
+      const count = await saveSub(lesson.id, lesson.title, vtt, location.href, "vtt");
       logPanel(`✅ ${currentIdx + 1}/${targetLessons.length} — "${lesson.title}" [${count} total]`, "success");
       retryCount = 0;
       currentIdx++;
@@ -222,10 +332,10 @@
     } else {
       retryCount++;
       if (retryCount < MAX_RETRIES) {
-        logPanel(`⏳ VTT not found, attempt ${retryCount}/${MAX_RETRIES}...`, "info");
+        logPanel(`⏳ Content not found, attempt ${retryCount}/${MAX_RETRIES}...`, "info");
         setTimeout(processCurrentLesson, SCAN_RETRY_MS);
       } else {
-        logPanel(`⚠️ "${lesson.title}" — no subtitles found, skipping`, "error");
+        logPanel(`⚠️ "${lesson.title}" — no content found, skipping`, "error");
         retryCount = 0;
         currentIdx++;
         await saveProgress();
@@ -250,7 +360,7 @@
   }
 
   // =====================================================
-  // UI — PANEL (starts in loading state)
+  // UI — PANEL
   // =====================================================
   function createPanel() {
     if (document.getElementById("vtt-panel")) return;
@@ -281,8 +391,9 @@
             <button id="vtt-btn-start">▶ Start</button>
             <button id="vtt-btn-continue">⏩ Continue</button>
             <button id="vtt-btn-stop" disabled>⏹ Stop</button>
-            <button id="vtt-btn-download">💾 Export</button>
-            <button id="vtt-btn-reset">🗑 Reset</button>
+            <button id="vtt-btn-download" title="Export as TXT">💾 TXT</button>
+            <button id="vtt-btn-download-html" title="Export as HTML">🌐 HTML</button>
+            <button id="vtt-btn-reset">🗑</button>
           </div>
           <div id="vtt-lesson-list"></div>
         </div>
@@ -298,7 +409,7 @@
     });
 
     document.getElementById("vtt-btn-start").addEventListener("click", async () => {
-      if (!confirm("Start collecting subtitles from the beginning?")) return;
+      if (!confirm("Start collecting from the beginning?")) return;
       if (curriculum.length === 0) { if (!(await fetchCurriculum())) return; }
       currentIdx = 0;
       retryCount = 0;
@@ -324,10 +435,11 @@
       updateUI();
     });
 
-    document.getElementById("vtt-btn-download").addEventListener("click", downloadAll);
+    document.getElementById("vtt-btn-download").addEventListener("click", () => downloadAll("txt"));
+    document.getElementById("vtt-btn-download-html").addEventListener("click", () => downloadAll("html"));
 
     document.getElementById("vtt-btn-reset").addEventListener("click", async () => {
-      if (!confirm("Delete ALL collected subtitles for this course?")) return;
+      if (!confirm("Delete ALL collected content for this course?")) return;
       await storageSet({ [sKey("subs")]: {}, [sKey("currentIdx")]: 0, [sKey("isRunning")]: false });
       currentIdx = 0;
       isRunning = false;
@@ -337,7 +449,7 @@
   }
 
   // =====================================================
-  // UI — LOADING / READY
+  // UI HELPERS
   // =====================================================
   function setLoadingText(text) {
     const el = document.getElementById("vtt-loading-text");
@@ -350,6 +462,12 @@
     const ready = document.getElementById("vtt-ready");
     if (loading) loading.style.display = "none";
     if (ready) ready.style.display = "flex";
+  }
+
+  function logPanel(message, type = "info") {
+    const status = document.getElementById("vtt-status-text");
+    if (status) status.textContent = message;
+    console.log(`[SubExport] ${message}`);
   }
 
   // =====================================================
@@ -366,7 +484,9 @@
 
     for (let i = 0; i < targetLessons.length; i++) {
       const lesson = targetLessons[i];
-      const hasSub = !!subs[`lec_${lesson.id}`];
+      const sub = subs[`lec_${lesson.id}`];
+      const hasSub = !!sub;
+      const isArticle = sub?.contentType === "article";
       const isCurrent = (i === currentIdx && isRunning);
       const isActivePage = (lesson.id === currentLid);
 
@@ -388,8 +508,10 @@
         isActivePage ? "active" : ""
       ].filter(Boolean).join(" ");
 
+      const icon = hasSub ? (isArticle ? "📄" : "✓") : (isCurrent ? "⟳" : "");
+
       html += `<div class="${classes}" data-idx="${i}" title="${lesson.title}">
-        <span class="ck">${hasSub ? "✓" : (isCurrent ? "⟳" : "")}</span>
+        <span class="ck">${icon}</span>
         <span class="nm">${i + 1}</span>
         <span class="tt">${lesson.title}</span>
         <button class="go" data-idx="${i}">▶</button>
@@ -420,12 +542,6 @@
     if (activeEl) activeEl.scrollIntoView({ block: "center", behavior: "smooth" });
   }
 
-  function logPanel(message, type = "info") {
-    const status = document.getElementById("vtt-status-text");
-    if (status) status.textContent = message;
-    console.log(`[SubExport] ${message}`);
-  }
-
   async function updateUI() {
     const subs = await getSubs();
     const count = Object.keys(subs).length;
@@ -452,10 +568,12 @@
     const btnCont = document.getElementById("vtt-btn-continue");
     const btnStop = document.getElementById("vtt-btn-stop");
     const btnDl = document.getElementById("vtt-btn-download");
+    const btnDlHtml = document.getElementById("vtt-btn-download-html");
     if (btnStart) btnStart.disabled = isRunning;
     if (btnCont) btnCont.disabled = isRunning;
     if (btnStop) btnStop.disabled = !isRunning;
     if (btnDl) btnDl.disabled = count === 0;
+    if (btnDlHtml) btnDlHtml.disabled = count === 0;
 
     await renderLessonList();
 
@@ -465,7 +583,7 @@
   // =====================================================
   // DOWNLOAD
   // =====================================================
-  async function downloadAll() {
+  async function downloadAll(format = "txt") {
     const subs = await getSubs();
     const entries = Object.values(subs);
     if (entries.length === 0) { logPanel("Nothing to export", "error"); return; }
@@ -474,22 +592,151 @@
     targetLessons.forEach((l, i) => { idOrder[l.id] = i; });
     entries.sort((a, b) => (idOrder[a.lectureId] ?? 999) - (idOrder[b.lectureId] ?? 999));
 
+    if (format === "html") {
+      downloadAsHTML(entries);
+    } else {
+      downloadAsTXT(entries);
+    }
+  }
+
+  function downloadAsTXT(entries) {
     let text = "";
     for (const entry of entries) {
       text += `\n${"=".repeat(60)}\n`;
       text += `${entry.title}\n`;
       text += `${"=".repeat(60)}\n\n`;
-      text += entry.content;
+
+      if (entry.contentType === "article") {
+        try {
+          const parsed = JSON.parse(entry.content);
+          text += parsed.text || entry.content;
+        } catch (e) {
+          text += entry.content;
+        }
+      } else {
+        text += entry.content;
+      }
       text += "\n";
     }
 
     const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `${courseSlug}_subtitles_${entries.length}_lessons.txt`;
+    a.download = `${courseSlug}_content_${entries.length}_lessons.txt`;
     a.click();
     URL.revokeObjectURL(a.href);
-    logPanel(`💾 Exported ${entries.length} lessons`, "success");
+    logPanel(`💾 Exported ${entries.length} lessons as TXT`, "success");
+  }
+
+  function downloadAsHTML(entries) {
+    let html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${courseSlug} - Course Content</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      line-height: 1.7;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 40px 20px;
+      background: #1a1a2e;
+      color: #e0e0e0;
+    }
+    h1 { color: #00ff88; border-bottom: 2px solid #00ff88; padding-bottom: 10px; }
+    h2 { color: #58a6ff; margin-top: 60px; padding: 15px; background: #21262d; border-radius: 8px; }
+    .lesson { margin: 30px 0; padding: 25px; background: #161b22; border-radius: 12px; border: 1px solid #30363d; }
+    .lesson-title { color: #00ff88; font-size: 1.3em; margin-bottom: 15px; }
+    .lesson-type { font-size: 0.8em; color: #8b949e; margin-left: 10px; }
+    .content { white-space: pre-wrap; }
+    .article-content { white-space: normal; }
+    .article-content p { margin: 1em 0; }
+    .article-content img { max-width: 100%; height: auto; border-radius: 8px; margin: 15px 0; }
+    .article-content strong { color: #ffa657; }
+    code, pre { background: #21262d; padding: 2px 6px; border-radius: 4px; font-family: monospace; }
+    pre { padding: 15px; overflow-x: auto; }
+    .toc { background: #21262d; padding: 20px; border-radius: 8px; margin-bottom: 40px; }
+    .toc a { color: #58a6ff; text-decoration: none; display: block; padding: 5px 0; }
+    .toc a:hover { color: #00ff88; }
+    .section-header { color: #8b949e; font-size: 0.9em; margin-top: 15px; margin-bottom: 5px; }
+  </style>
+</head>
+<body>
+  <h1>📚 ${courseSlug}</h1>
+  <p style="color: #8b949e;">Exported ${entries.length} lessons • ${new Date().toLocaleDateString()}</p>
+  
+  <div class="toc">
+    <strong>Table of Contents</strong>
+`;
+
+    let lastSection = "";
+    entries.forEach((entry, i) => {
+      const lesson = targetLessons.find(l => l.id === entry.lectureId);
+      if (lesson && lesson.sectionTitle !== lastSection) {
+        lastSection = lesson.sectionTitle;
+        html += `    <div class="section-header">${lastSection}</div>\n`;
+      }
+      const icon = entry.contentType === "article" ? "📄" : "🎬";
+      html += `    <a href="#lesson-${i}">${icon} ${entry.title}</a>\n`;
+    });
+
+    html += `  </div>\n\n`;
+
+    lastSection = "";
+    entries.forEach((entry, i) => {
+      const lesson = targetLessons.find(l => l.id === entry.lectureId);
+
+      if (lesson && lesson.sectionTitle !== lastSection) {
+        lastSection = lesson.sectionTitle;
+        html += `  <h2>📁 ${lastSection}</h2>\n`;
+      }
+
+      const typeLabel = entry.contentType === "article" ? "Article" : "Video";
+      html += `  <div class="lesson" id="lesson-${i}">\n`;
+      html += `    <div class="lesson-title">${entry.title}<span class="lesson-type">[${typeLabel}]</span></div>\n`;
+
+      if (entry.contentType === "article") {
+        try {
+          const parsed = JSON.parse(entry.content);
+          html += `    <div class="article-content">${parsed.html || escapeHtml(parsed.text)}</div>\n`;
+        } catch (e) {
+          html += `    <div class="content">${escapeHtml(entry.content)}</div>\n`;
+        }
+      } else {
+        const cleanVtt = cleanVTTContent(entry.content);
+        html += `    <div class="content">${escapeHtml(cleanVtt)}</div>\n`;
+      }
+
+      html += `  </div>\n\n`;
+    });
+
+    html += `</body>\n</html>`;
+
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${courseSlug}_content_${entries.length}_lessons.html`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    logPanel(`🌐 Exported ${entries.length} lessons as HTML`, "success");
+  }
+
+  function escapeHtml(text) {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  function cleanVTTContent(vtt) {
+    return vtt
+      .replace(/^WEBVTT\s*/, "")
+      .replace(/\d+\n\d{2}:\d{2}:\d{2}\.\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}\.\d{3}\s*\n?/g, "")
+      .replace(/^\d+\s*$/gm, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
   }
 
   // =====================================================
@@ -522,10 +769,8 @@
       return;
     }
 
-    // 1. Show panel in loading state immediately
     createPanel();
 
-    // 2. Load saved state from storage
     const data = await loadState();
     const wasRunning = data[sKey("isRunning")];
 
@@ -534,24 +779,21 @@
       setLoadingText("Resuming...");
     }
 
-    // 3. Fetch curriculum if not in cache
     if (curriculum.length === 0) {
       const ok = await fetchCurriculum();
-      if (!ok) return; // stays on loading screen with error
+      if (!ok) return;
     }
 
-    // 4. Switch to ready UI
     showReady();
     await updateUI();
 
-    // 5. Resume crawl if was running
     if (wasRunning) {
       setTimeout(processCurrentLesson, 2000);
     }
   }
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (msg.type === "triggerDownload") { downloadAll(); sendResponse({ ok: true }); }
+    if (msg.type === "triggerDownload") { downloadAll("txt"); sendResponse({ ok: true }); }
   });
 
   if (document.readyState === "complete") setTimeout(init, 500);

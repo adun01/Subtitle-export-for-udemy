@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Subtitle Export for Udemy",
   "description": "Export course subtitles from Udemy as a text file for notes and study. Open source: github.com/adun01/Subtitle-export-for-udemy",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "permissions": ["storage", "activeTab"],
   "host_permissions": ["*://*.udemy.com/*", "*://*.udemycdn.com/*"],
   "content_scripts": [
